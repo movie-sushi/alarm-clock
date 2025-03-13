@@ -8,17 +8,17 @@ Basically the windows clock app kinda sucks, so I "made" a better solution (kind
 ## Installation
 
 **Clone repo:**
-> `git clone https://github.com/agent-seed/alarm-clock`
+`git clone https://github.com/agent-seed/alarm-clock`
 Or
 Download zip and decompress it
 
 **Enter app directory:**
-> `cd alarm-clock`
+`cd alarm-clock`
 
 **Install required packages:**
 
-> `pip -r requirements.txt`
+`pip -r requirements.txt`
 
 **Run:**
 
-> `python alarm.py`
+`python alarm.py`
