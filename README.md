@@ -1,6 +1,6 @@
 # Simple Alarm Clock with GUI
 
-"Written" by Agentseed.| Actually written by ChatGPT (o1 model, 3/2024).
+"Written" by Agentseed. | Actually written by ChatGPT (o1 model, 3/2024).
 
 Basically the windows clock app kinda sucks, so I "made" a better solution (kinda).
 
