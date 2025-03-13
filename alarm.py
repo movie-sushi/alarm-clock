@@ -1,12 +1,51 @@
-# Simple Alarm Clock with GUI
-# "Written" by Agentseed
-# Actually written by ChatGPT (o1 model, 3/2024)
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 from datetime import datetime, date
 import os
 from playsound import playsound
 import threading
+import json
+from typing import Optional
+import pystray
+from pystray import MenuItem as item
+from PIL import Image
+from win10toast import ToastNotifier
+toaster = ToastNotifier()
+
+def on_quit_tray(icon, _):
+    """
+    Called when selecting 'Exit' from the tray.
+    Stop the icon, then shut down the Tk app.
+    """
+    icon.stop()
+    root.quit()
+
+def show_main_window(icon, _):
+    """
+    Called when selecting 'Show' from the tray menu.
+    Show (deiconify) the hidden Tk window.
+    Then stop the icon so we don't have two event loops.
+    """
+    root.deiconify()
+    icon.stop()
+
+def run_tray():
+    """
+    The function to run pystray.Icon in its own event loop (blocking).
+    """
+    # You need an icon image (PNG). Make or use a small 16x16 or 32x32 PNG.
+    image = Image.open("assets/alarm.png")
+    menu = (item('Show', show_main_window), item('Exit', on_quit_tray))
+    icon = pystray.Icon("AlarmApp", image, "My Alarms", menu)
+    icon.run()  # blocking call
+
+def minimize_to_tray():
+    """
+    Hide the Tk window (so it 'goes to tray').
+    Then run the tray icon in a separate thread.
+    """
+    root.withdraw()  # hide the window
+    threading.Thread(target=run_tray, daemon=True).start()
 
 class Alarm:
     """
@@ -14,38 +53,75 @@ class Alarm:
       - name (str)
       - hour (int)
       - minute (int)
-      - days (list of booleans, [Mon..Sun])
+      - days (list of bools, for Mon..Sun)
       - sound_path (str)
-      - last_triggered_date (date)   -> ensures we don't trigger multiple times a day
-      - enabled (bool)              -> can be toggled on/off
+      - last_triggered_date (date or None)
+      - enabled (bool)
     """
-    def __init__(self, name, hour, minute, days, sound_path):
+    def __init__(self, name, hour, minute, days, sound_path, 
+                 last_triggered_date: Optional[date] = None, enabled=True):
         self.name = name
         self.hour = hour
         self.minute = minute
         self.days = days
         self.sound_path = sound_path
-        self.last_triggered_date = None
-        self.enabled = True
+        self.last_triggered_date = last_triggered_date  # a date object or None
+        self.enabled = enabled
 
-alarms = []  # will hold Alarm objects
+    def to_dict(self):
+        """
+        Convert Alarm to a dictionary suitable for JSON serialization.
+        We'll store last_triggered_date as an ISO string if it's not None.
+        """
+        return {
+            "name": self.name,
+            "hour": self.hour,
+            "minute": self.minute,
+            "days": self.days,
+            "sound_path": self.sound_path,
+            "last_triggered_date": self.last_triggered_date.isoformat() if self.last_triggered_date else None,
+            "enabled": self.enabled
+        }
+
+    @staticmethod
+    def from_dict(data: dict):
+        """
+        Create an Alarm from a dict, converting the ISO date string back to a date object if present.
+        """
+        last_trigger_str = data.get("last_triggered_date")
+        if last_trigger_str:
+            # parse the ISO date string
+            last_triggered_date = date.fromisoformat(last_trigger_str)
+        else:
+            last_triggered_date = None
+
+        return Alarm(
+            name=data["name"],
+            hour=data["hour"],
+            minute=data["minute"],
+            days=data["days"],
+            sound_path=data["sound_path"],
+            last_triggered_date=last_triggered_date,
+            enabled=data["enabled"]
+        )
+
+alarms = []  # will hold Alarm objects in memory
+
+SAVE_FILE = "alarms.json"  # Name/path of the JSON file for storing alarms
 
 def play_sound(sound_path):
-    """
-    Plays the alarm sound in a separate thread so it doesn't block the GUI.
-    """
     def _worker():
         playsound(sound_path)
     threading.Thread(target=_worker, daemon=True).start()
 
 def check_alarms():
     """
-    Called periodically via root.after(). Checks each alarm's conditions:
-      - Is the alarm enabled?
-      - Do the hour/minute match current time?
+    Periodically checks each alarm:
+      - Is it enabled?
+      - Do the hour/minute match?
       - Is today (weekday) active?
-      - Has it not been triggered yet today?
-    If all pass, play the sound and update last_triggered_date.
+      - Have we not triggered it yet today?
+    If so, play the sound and mark it as triggered for today.
     """
     now = datetime.now()
     current_hour = now.hour
@@ -58,27 +134,51 @@ def check_alarms():
             if alarm.hour == current_hour and alarm.minute == current_minute:
                 if alarm.days[current_weekday]:
                     if alarm.last_triggered_date != today_date:
-                        # Trigger it
                         alarm.last_triggered_date = today_date
                         play_sound(alarm.sound_path)
+                        toaster.show_toast("Alarm", f"Time to wake up! {alarm.name}",
+                            icon_path='assets/alarm.ico', duration=5, threaded=True)
+    # Check again in 10 seconds
+    root.after(10_000, check_alarms)
 
-    # Schedule the next check in 30 seconds
-    root.after(30_000, check_alarms)
+def save_alarms_to_file():
+    """
+    Serializes the alarms list to a JSON file so we can load it next time the app runs.
+    """
+    with open(SAVE_FILE, "w", encoding="utf-8") as f:
+        data = [alarm.to_dict() for alarm in alarms]
+        json.dump(data, f, indent=2)
+
+def load_alarms_from_file():
+    """
+    Reads any existing JSON file and restores the alarms into the app.
+    If no file, or it's invalid, we skip loading.
+    """
+    if not os.path.exists(SAVE_FILE):
+        return  # Nothing to load
+
+    try:
+        with open(SAVE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            # data should be a list of dicts, each representing an Alarm
+            for alarm_dict in data:
+                alarm = Alarm.from_dict(alarm_dict)
+                alarms.append(alarm)
+    except Exception as e:
+        print("Error loading alarms:", e)
 
 def refresh_alarm_list():
     """
-    Clears and re-populates the Treeview with the current `alarms`.
+    Clears and re-populates the Treeview to reflect current `alarms`.
     """
     alarm_tree.delete(*alarm_tree.get_children())
+
     for index, alarm in enumerate(alarms):
-        # Days string (e.g. "MTWTF--" for Mon-Fri)
+        # Create a short day string, e.g. "M T W Th F - -"
         day_labels = ["M", "T", "W", "Th", "F", "Sa", "Su"]
         active_days_str = []
         for i, active in enumerate(alarm.days):
-            if active:
-                active_days_str.append(day_labels[i])
-            else:
-                active_days_str.append("-")
+            active_days_str.append(day_labels[i] if active else "-")
         day_string = " ".join(active_days_str)
 
         enabled_str = "Yes" if alarm.enabled else "No"
@@ -87,14 +187,11 @@ def refresh_alarm_list():
         alarm_tree.insert(
             "",
             "end",
-            iid=str(index),  # Treeview item ID
+            iid=str(index),
             values=(alarm.name, time_str, day_string, enabled_str)
         )
 
 def add_alarm():
-    """
-    Reads GUI fields, creates an Alarm object, adds to list, refreshes tree.
-    """
     name = name_entry.get().strip()
     if not name:
         status_label.config(text="Please provide an alarm name.")
@@ -127,11 +224,15 @@ def add_alarm():
 
     sound_path = sound_path_entry.get()
     if not os.path.isfile(sound_path):
-        status_label.config(text="Invalid file path.")
+        status_label.config(text="Invalid sound file path.")
         return
 
     new_alarm = Alarm(name, hour, minute, selected_days, sound_path)
     alarms.append(new_alarm)
+
+    # Save and refresh
+    save_alarms_to_file()
+    refresh_alarm_list()
 
     status_label.config(text=f"Alarm '{name}' added.")
     # Clear inputs
@@ -147,12 +248,7 @@ def add_alarm():
     sat_var.set(False)
     sun_var.set(False)
 
-    refresh_alarm_list()
-
 def browse_sound():
-    """
-    Let user pick a file for the alarm sound.
-    """
     file_path = filedialog.askopenfilename(
         title="Select Alarm Sound",
         filetypes=[("Audio Files", "*.wav *.mp3 *.ogg *.flac *.aac *.m4a *.wma"), ("All Files", "*.*")]
@@ -170,14 +266,15 @@ def toggle_alarm():
         messagebox.showinfo("No Selection", "Please select an alarm to enable/disable.")
         return
 
-    # There's only 1 selection, so get the first one
-    idx = int(selected[0])  # We stored the index as a string in the tree's iid
+    idx = int(selected[0])
     alarms[idx].enabled = not alarms[idx].enabled
+
+    save_alarms_to_file()
     refresh_alarm_list()
 
 def delete_alarm():
     """
-    Deletes the selected alarm from the list/Treeview.
+    Removes the selected alarm from the list and file.
     """
     selected = alarm_tree.selection()
     if not selected:
@@ -189,10 +286,11 @@ def delete_alarm():
     confirm = messagebox.askyesno("Confirm Delete", f"Delete alarm '{alarm_name}'?")
     if confirm:
         alarms.pop(idx)
+        save_alarms_to_file()
         refresh_alarm_list()
         status_label.config(text=f"Alarm '{alarm_name}' deleted.")
 
-# ---- GUI Setup ----
+# ----- GUI SETUP -----
 root = tk.Tk()
 root.title("Alarm Clock")
 
@@ -234,7 +332,7 @@ tk.Checkbutton(days_frame, text="Sat", variable=sat_var).pack(side=tk.LEFT)
 tk.Checkbutton(days_frame, text="Sun", variable=sun_var).pack(side=tk.LEFT)
 
 # Sound path
-tk.Label(main_frame, text="Sound:").grid(row=2, column=0, sticky="e")
+tk.Label(main_frame, text="Sound File:").grid(row=2, column=0, sticky="e")
 sound_path_entry = tk.Entry(main_frame, width=30)
 sound_path_entry.grid(row=2, column=1, columnspan=4, padx=5, sticky="w")
 browse_button = tk.Button(main_frame, text="Browse...", command=browse_sound)
@@ -278,8 +376,13 @@ enable_button.pack(side=tk.LEFT, padx=5)
 
 delete_button = tk.Button(manage_frame, text="Delete Alarm", command=delete_alarm)
 delete_button.pack(side=tk.LEFT, padx=5)
+btn_tray = tk.Button(root, text="Minimize to System Tray", command=minimize_to_tray)
+btn_tray.pack(padx=20, pady=20)
 
-# Initialize the alarm check
+# ----- LOAD ALARMS (if any) -----
+load_alarms_from_file()
+refresh_alarm_list()
+
+# Start checking
 root.after(1000, check_alarms)
-
 root.mainloop()
