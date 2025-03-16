@@ -1,4 +1,0 @@
-tkinter
-playsound==1.2.2
-pystray
-win10toast
